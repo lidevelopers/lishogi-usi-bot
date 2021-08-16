@@ -1,97 +1,125 @@
-import chess
-import chess.xboard
-import chess.uci
+import shogi
+import chess.usi
+from util import *
+
+import engine_ctrl
+
+@backoff.on_exception(backoff.expo, BaseException, max_time=120)
+def create_engine(config, board):
+    cfg = config["engine"]
+    engine_path = os.path.join(cfg["dir"], cfg["name"])
+    engine_type = cfg.get("protocol")
+    engine_options = cfg.get("engine_options")
+    commands = [engine_path]
+    if engine_options:
+        for k, v in engine_options.items():
+            commands.append("--{}={}".format(k, v))
+
+    silence_stderr = cfg.get("silence_stderr", False)
+
+    return USIEngine(board, commands, cfg.get("usi_options", {}) or {}, silence_stderr)
+
 
 class EngineWrapper:
 
-    def __init__(self, board, commands):
+    def __init__(self, board, commands, options=None, silence_stderr=False):
         pass
 
-    def pre_game(self, game):
+    def set_time_control(self, game):
         pass
 
-    def first_search(self, movetime):
+    def first_search(self, board, movetime):
         pass
 
-    def search(self, board, wtime, btime, winc, binc):
+    def search(self, board, btime, wtime, binc, winc):
         pass
 
     def print_stats(self):
+        pass
+
+    def get_opponent_info(self, game):
         pass
 
     def name(self):
         return self.engine.name
 
     def quit(self):
-        self.engine.quit()
+        self.engine.kill_process()
 
-    def print_stats(self):
-        stats = ["depth", "nodes", "score"]
+    def print_handler_stats(self, info, stats):
         for stat in stats:
-            post_handler = self.engine.post_handlers[0]
-            if stat in post_handler.post:
-                print("    {}: {}".format(stat, post_handler.post[stat]))
+            if stat in info:
+                print("    {}: {}".format(stat, info[stat]))
 
-class XBoardEngine(EngineWrapper):
+    def get_handler_stats(self, info, stats):
+        stats_str = []
+        for stat in stats:
+            if stat in info:
+                stats_str.append("{}: {}".format(stat, info[stat]))
 
-    def __init__(self, board, commands):
+        return stats_str
+
+
+class USIEngine(EngineWrapper):
+
+    def __init__(self, board, commands, options, silence_stderr=False):
         commands = commands[0] if len(commands) == 1 else commands
-        self.engine = chess.xboard.popen_engine(commands)
+        self.go_commands = options.get("go_commands", {})
+        print("GO, OPTIONS:", options)
 
-        self.engine.xboard()
-        self.engine.setboard(board)
-
-        post_handler = chess.xboard.PostHandler()
-        self.engine.post_handlers.append(post_handler)
-
-    def pre_game(self, game):
-        minutes = game.clock_initial / 1000 / 60
-        seconds = game.clock_initial / 1000 % 60
-        inc = game.clock_increment / 1000
-        self.engine.level(0, minutes, seconds, inc)
-
-    def first_search(self, board, movetime):
-        self.engine.setboard(board)
-        self.engine.st(movetime / 1000)
-        return self.engine.go()
-
-    def search(self, board, wtime, btime, winc, binc):
-        self.engine.setboard(board)
-        if board.turn == chess.WHITE:
-            self.engine.time(wtime / 10)
-            self.engine.otim(btime / 10)
-        else:
-            self.engine.time(btime / 10)
-            self.engine.otim(wtime / 10)
-        return self.engine.go()
-
-class UCIEngine(EngineWrapper):
-
-    def __init__(self, board, commands, options):
-        commands = commands[0] if len(commands) == 1 else commands
-        self.engine = chess.uci.popen_engine(commands)
-
-        self.engine.uci()
+        self.engine = engine_ctrl.Engine(commands)
+        self.engine.usi()
 
         if options:
-            self.engine.setoption(options)
-
-        self.engine.position(board)
-
-        info_handler = chess.uci.InfoHandler()
-        self.engine.info_handlers.append(info_handler)
+            for name, value in options["options"].items():
+                self.engine.setoption(name, value)
 
     def first_search(self, board, movetime):
-        self.engine.position(board)
-        best_move, _ = self.engine.go(movetime=movetime)
+        best_move, _ = self.engine.go(board.sfen(), "", movetime=movetime)
         return best_move
 
-    def search(self, board, wtime, btime, winc, binc):
-        self.engine.position(board)
-        best_move, _ = self.engine.go(
-            wtime=wtime,
+    def search_with_ponder(self, board, btime, wtime, binc, winc, ponder=False):
+        moves = [m.usi() for m in list(board.move_stack)]
+        best_move, ponder_move = self.engine.go(
+            board.sfen(),
+            moves,
             btime=btime,
+            wtime=wtime,
+            binc=binc,
             winc=winc,
-            binc=binc
+            #ponder=ponder
+        )
+        return (best_move, ponder_move)
+
+    def search(self, board, btime, wtime, binc, winc):
+        cmds = self.go_commands
+        moves = [m.usi() for m in list(board.move_stack)]
+        best_move, _ = self.engine.go(
+            board.sfen(),
+            moves,
+            btime=btime,
+            wtime=wtime,
+            binc=binc,
+            winc=winc,
+            depth=cmds.get("depth"),
+            nodes=cmds.get("nodes"),
+            movetime=cmds.get("movetime")
         )
         return best_move
+
+
+    def stop(self):
+        self.engine.kill_process()
+
+    def print_stats(self):
+        pass
+
+    def get_stats(self):
+        pass
+
+    def get_opponent_info(self, game):
+        name = game.opponent.name
+        if name:
+            rating = game.opponent.rating if game.opponent.rating is not None else "none"
+            title = game.opponent.title if game.opponent.title else "none"
+            player_type = "computer" if title == "BOT" else "human"
