@@ -1,0 +1,44 @@
+token: "xxxxxxxxxxxxxxxx"    # lichess OAuth2 Token
+url: "https://lichess.org/"  # lichess base URL
+
+engine:                      # engine settings
+  dir: "./engines/"          # dir containing engines, relative to this project
+  name: "engine_name"        # binary name of the engine to use
+  protocol: "uci"            # "uci" or "xboard"
+#  weights: "latest.txt"     # only if the engine is lczero
+#  threads: 1                # only if the engine is lczero
+
+#ucioptions:
+#  Threads: 4
+#  Hash: "4096"
+#  Book File: "engines/book.bin"
+
+
+max_concurrent_games: 1      # number of games to play simultaneously
+max_queued_challenges: 8     # number of challenges to allow to queue
+
+supported_variants:          # chess variants to accept (http://lichess.org/variant)
+  - standard
+#  - fromPosition
+#  - antichess
+#  - atomic
+#  - chess960
+#  - crazyhouse
+#  - horde
+#  - kingOfTheHill
+#  - racingKings
+#  - threeCheck
+
+supported_tc:                # time controls to accept
+  - ultraBullet
+  - bullet
+  - blitz
+  - rapid
+#  - classical
+#  - correspondence
+
+supported_modes:             # game modes to accept
+  - casual                   # unrated games
+  - rated                    # rated games - must comment if the engine doesn't try to win
+
+print_engine_stats: false    # print engine stats on each move
