@@ -1,60 +1,85 @@
-import json
 import requests
-from future.standard_library import install_aliases
-install_aliases()
-from urllib.parse import urlparse, urlencode
 from urllib.parse import urljoin
+from requests.exceptions import ConnectionError, HTTPError, ReadTimeout
+from urllib3.exceptions import ProtocolError
+from util import makeuci
+
+try:
+    from http.client import RemoteDisconnected
+    # New in version 3.5: Previously, BadStatusLine('') was raised.
+except ImportError:
+    from http.client import BadStatusLine as RemoteDisconnected
+
+import backoff
 
 ENDPOINTS = {
-    "profile": "/account/me",
-    "stream": "/bot/game/stream/{}",
+    "profile": "/api/account",
+    "playing": "/api/account/playing",
+    "stream": "/api/bot/game/stream/{}",
     "stream_event": "/api/stream/event",
-    "game": "/bot/game/{}",
-    "move": "/bot/game/{}/move/{}",
-    "chat": "/bot/game/{}/chat",
-    "abort": "/bot/game/{}/abort",
-    "accept": "/challenge/{}/accept",
-    "decline": "/challenge/{}/decline",
-    "upgrade": "/bot/account/upgrade"
+    "game": "/api/bot/game/{}",
+    "move": "/api/bot/game/{}/move/{}",
+    "chat": "/api/bot/game/{}/chat",
+    "abort": "/api/bot/game/{}/abort",
+    "accept": "/api/challenge/{}/accept",
+    "decline": "/api/challenge/{}/decline",
+    "upgrade": "/api/bot/account/upgrade",
+    "resign": "/api/bot/game/{}/resign"
 }
 
 # docs: https://lichess.org/api
-class Lichess():
+class Lishogi():
 
-    def __init__(self, token, url):
-        self.header = self._get_header(token)
+    def __init__(self, token, url, version):
+        self.version = version
+        self.header = {
+            "Authorization": "Bearer {}".format(token)
+        }
         self.baseUrl = url
+        self.session = requests.Session()
+        self.session.headers.update(self.header)
+        self.set_user_agent("?")
 
-    def get_json(self, response):
-        if response.status_code != 200:
-            print("Something went wrong! status_code: {}, response: {}".format(response.status_code, response.text))
-            return None
+    def is_final(exception):
+        return isinstance(exception, HTTPError) and exception.response.status_code < 500
+
+    @backoff.on_exception(backoff.constant,
+        (RemoteDisconnected, ConnectionError, ProtocolError, HTTPError, ReadTimeout),
+        max_time=60,
+        interval=0.1,
+        giveup=is_final)
+    def api_get(self, path):
+        url = urljoin(self.baseUrl, path)
+        response = self.session.get(url, timeout=2)
+        response.raise_for_status()
+        return response.json()
+
+    @backoff.on_exception(backoff.constant,
+        (RemoteDisconnected, ConnectionError, ProtocolError, HTTPError, ReadTimeout),
+        max_time=60,
+	interval=0.1,
+        giveup=is_final)
+    def api_post(self, path, data=None):
+        url = urljoin(self.baseUrl, path)
+        response = self.session.post(url, data=data, timeout=2)
+        response.raise_for_status()
         return response.json()
 
     def get_game(self, game_id):
-        url = urljoin(self.baseUrl, ENDPOINTS["game"].format(game_id))
-        return self.get_json(requests.get(url, headers=self.header))
+        return self.api_get(ENDPOINTS["game"].format(game_id))
 
     def upgrade_to_bot_account(self):
-        url = urljoin(self.baseUrl, ENDPOINTS["upgrade"])
-        return self.get_json(requests.post(url, headers=self.header))
+        return self.api_post(ENDPOINTS["upgrade"])
 
     def make_move(self, game_id, move):
-        url = urljoin(self.baseUrl, ENDPOINTS["move"].format(game_id, move))
-        return self.get_json(requests.post(url, headers=self.header))
+        return self.api_post(ENDPOINTS["move"].format(game_id, makeuci(move)))
 
     def chat(self, game_id, room, text):
-        url = urljoin(self.baseUrl, ENDPOINTS["chat"].format(game_id))
         payload = {'room': room, 'text': text}
-        return self.get_json(requests.post(url, headers=self.header, data=payload))
+        return self.api_post(ENDPOINTS["chat"].format(game_id), data=payload)
 
     def abort(self, game_id):
-        url = urljoin(self.baseUrl, ENDPOINTS["abort"].format(game_id))
-        return self.get_json(requests.post(url, headers=self.header))
-
-    def get_stream(self, game_id):
-        url = urljoin(self.baseUrl, ENDPOINTS["stream"].format(game_id))
-        return requests.get(url, headers=self.header, stream=True)
+        return self.api_post(ENDPOINTS["abort"].format(game_id))
 
     def get_event_stream(self):
         url = urljoin(self.baseUrl, ENDPOINTS["stream_event"])
@@ -65,21 +90,23 @@ class Lichess():
         return requests.get(url, headers=self.header, stream=True)
 
     def accept_challenge(self, challenge_id):
-        url = urljoin(self.baseUrl, ENDPOINTS["accept"].format(challenge_id))
-        return self.get_json(requests.post(url, headers=self.header))
-
+        return self.api_post(ENDPOINTS["accept"].format(challenge_id))
 
     def decline_challenge(self, challenge_id):
-        url = urljoin(self.baseUrl, ENDPOINTS["decline"].format(challenge_id))
-        return self.get_json(requests.post(url, headers=self.header))
-
+        return self.api_post(ENDPOINTS["decline"].format(challenge_id))
 
     def get_profile(self):
-        url = urljoin(self.baseUrl, ENDPOINTS["profile"])
-        return self.get_json(requests.get(url, headers=self.header))
+        profile = self.api_get(ENDPOINTS["profile"])
+        self.set_user_agent(profile["username"])
+        return profile
 
+    def get_ongoing_games(self):
+        ongoing_games = self.api_get(ENDPOINTS["playing"])["nowPlaying"]
+        return ongoing_games
 
-    def _get_header(self, token):
-        return {
-            "Authorization": "Bearer {}".format(token)
-        }
+    def resign(self, game_id):
+        self.api_post(ENDPOINTS["resign"].format(game_id))
+
+    def set_user_agent(self, username):
+        self.header.update({"User-Agent": "lichess-bot/{} user:{}".format(self.version, username)})
+        self.session.headers.update(self.header)
